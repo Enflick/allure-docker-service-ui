@@ -13,6 +13,10 @@ on:
 env:
   DOCKER_IMAGE: frankescobar/allure-docker-service-ui
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   build-release:
     runs-on: ubuntu-latest
@@ -22,10 +26,20 @@ jobs:
       - name: Pulling code
         uses: actions/checkout@v2
 
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ secrets.IAM_ROLE }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
       - name: Preparing
         id: prepare
         run: |
-          DOCKER_PLATFORMS=linux/amd64,linux/arm64,linux/arm/v7
+          DOCKER_PLATFORMS=linux/amd64
           VERSION=na
           TAGS="--tag ${DOCKER_IMAGE}:na"
 
@@ -56,22 +70,21 @@ jobs:
           version: latest
 
       - name: Docker Building
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          REPO_PATH: allure-docker-service-ui
         run: |
-          docker buildx build --output "type=image,push=false" ${{ steps.prepare.outputs.buildx_args }}
-
-      - name: DockerHub Login
-        if: success() && startsWith(github.ref, 'refs/tags/v')
-        uses: docker/login-action@v1
-        with:
-          username: ${{ secrets.DOCKER_HUB_USER }}
-          password: ${{ secrets.DOCKER_HUB_PASS }}
+          docker build --no-cache \
+          -t $ECR_REGISTRY/$REPO_PATH:$IMAGE_TAG \
+          -t $ECR_REGISTRY/$REPO_PATH:latest \
+          ${{ steps.prepare.outputs.buildx_args }}
 
       - name: Docker Publishing
-        if: success() && startsWith(github.ref, 'refs/tags/v')
+        if: success()
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPO_PATH: allure-docker-service-ui
         run: |
-          docker buildx build --output "type=image,push=true" ${{ steps.prepare.outputs.buildx_args }}
-
-      - name: Inspecting image
-        if: always() && startsWith(github.ref, 'refs/tags/v')
-        run: |
-          docker buildx imagetools inspect ${{ steps.prepare.outputs.docker_image }}:${{ steps.prepare.outputs.version }}
+          echo "DOCKER PUSH: pushing - $ECR_REGISTRY/$REPO_PATH:latest"
+          docker push $ECR_REGISTRY/$REPO_PATH:latest
