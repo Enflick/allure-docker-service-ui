@@ -1,10 +1,12 @@
 ---
-# SRE-506 / INC-1940: enforce SHA-pinned GitHub Actions by calling the org-wide
-# reusable gate hosted in Enflick/composite-actions. It fails any PR that
-# introduces an external `uses:` not pinned to a full 40-char commit SHA
-# (docker:// to an @sha256:<digest>). First-party Enflick/* and local ./ refs
-# are exempt. The reusable workflow is the single source of truth for the check
-# across the org; Dependabot keeps the pinned ref current.
+# SRE-506 / INC-1940: enforcement gate for SHA-pinned GitHub Actions.
+#
+# Self-contained inline check: this repo is PUBLIC and GitHub forbids public
+# repos from calling the PRIVATE reusable gate in Enflick/composite-actions, so
+# the check is inlined here. Fails the PR if any external `uses:` is not pinned
+# to a full 40-char commit SHA (docker:// to an @sha256:<digest>). First-party
+# Enflick/* and local ./ refs are exempt. The only action it uses
+# (actions/checkout) is itself pinned by SHA.
 name: Actions Pin Check
 
 on:
@@ -15,5 +17,79 @@ permissions:
   contents: read
 
 jobs:
-  pin-check:
-    uses: Enflick/composite-actions/.github/workflows/pin-check-reusable.yml@943ab84983a29564249273e951435a6ac95fce17 # v0.0.105
+  verify-pinned-actions:
+    name: Verify external actions are SHA-pinned
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check that every external action is pinned to a commit SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha_re='^[0-9a-f]{40}$'
+          digest_re='^sha256:[0-9a-f]{64}$'
+          violations=0
+          scanned=0
+
+          file_list="$(
+            { find .github/workflows -maxdepth 1 -type f \
+                \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null
+              find . -path ./.git -prune -o -type f \
+                \( -name 'action.yml' -o -name 'action.yaml' \) -print 2>/dev/null
+            } | sort -u
+          )"
+
+          if [ -z "$file_list" ]; then
+            echo "No workflow or action files found to scan."
+            exit 0
+          fi
+
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            scanned=$((scanned + 1))
+            while IFS= read -r raw; do
+              lineno="${raw%%:*}"
+              content="${raw#*:}"
+              ref="${content#*uses:}"
+              ref="${ref%%#*}"
+              ref="$(printf '%s' "$ref" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+              ref="${ref%\"}"; ref="${ref#\"}"
+              ref="${ref%\'}"; ref="${ref#\'}"
+              [ -z "$ref" ] && continue
+              case "$ref" in
+                ./*) continue ;;
+                Enflick/*) continue ;;
+              esac
+              case "$ref" in
+                docker://*)
+                  digest="${ref##*@}"
+                  if [[ "$digest" =~ $digest_re ]]; then
+                    continue
+                  fi
+                  echo "::error file=$f,line=$lineno::Unpinned docker action: '$ref' (expected docker://...@sha256:<64-hex>)"
+                  violations=$((violations + 1))
+                  continue
+                  ;;
+              esac
+              if [[ "$ref" != *"@"* ]]; then
+                echo "::error file=$f,line=$lineno::Action is missing a version pin: '$ref'"
+                violations=$((violations + 1))
+                continue
+              fi
+              sha="${ref##*@}"
+              if [[ "$sha" =~ $sha_re ]]; then
+                continue
+              fi
+              echo "::error file=$f,line=$lineno::Unpinned action (pin to a 40-char commit SHA): '$ref'"
+              violations=$((violations + 1))
+            done < <(grep -nE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]' "$f" || true)
+          done < <(printf '%s\n' "$file_list")
+
+          if [ "$violations" -gt 0 ]; then
+            echo "Scanned $scanned file(s); found $violations unpinned external action(s)."
+            exit 1
+          fi
+          echo "Scanned $scanned file(s). All external actions are pinned to a commit SHA."
