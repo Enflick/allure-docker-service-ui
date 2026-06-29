@@ -1,0 +1,19 @@
+---
+# SRE-506 / INC-1940: enforce SHA-pinned GitHub Actions by calling the org-wide
+# reusable gate hosted in Enflick/composite-actions. It fails any PR that
+# introduces an external `uses:` not pinned to a full 40-char commit SHA
+# (docker:// to an @sha256:<digest>). First-party Enflick/* and local ./ refs
+# are exempt. The reusable workflow is the single source of truth for the check
+# across the org; Dependabot keeps the pinned ref current.
+name: Actions Pin Check
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pin-check:
+    uses: Enflick/composite-actions/.github/workflows/pin-check-reusable.yml@943ab84983a29564249273e951435a6ac95fce17 # v0.0.105
