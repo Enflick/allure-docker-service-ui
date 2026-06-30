@@ -1,0 +1,15 @@
+---
+# SRE-506 / INC-1940: keep SHA-pinned GitHub Actions current. Every external
+# action in .github/workflows/ is pinned to a commit SHA with a "# vX" version
+# comment; Dependabot (github-actions ecosystem) bumps the SHA and the comment
+# together. A single "actions" group batches updates into one weekly PR.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
